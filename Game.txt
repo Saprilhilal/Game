@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Retro PS2 Style Racer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Press Start 2P', cursive;
+            touch-action: none; /* Mencegah scroll di HP */
+        }
+        #game-canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+        .ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+        .scanlines {
+            background: linear-gradient(
+                to bottom,
+                rgba(255,255,255,0),
+                rgba(255,255,255,0) 50%,
+                rgba(0,0,0,0.1) 50%,
+                rgba(0,0,0,0.1)
+            );
+            background-size: 100% 4px;
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            pointer-events: none;
+            z-index: 10;
+        }
+        .control-btn {
+            pointer-events: auto;
+            background: rgba(255, 255, 255, 0.2);
+            border: 2px solid rgba(255, 255, 255, 0.5);
+            backdrop-filter: blur(4px);
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        .control-btn:active {
+            background: rgba(255, 255, 255, 0.4);
+        }
+        
+        #start-screen, #game-over-screen {
+            pointer-events: auto;
+            background: rgba(0, 0, 0, 0.8);
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Container 3D -->
+    <div id="canvas-container"></div>
+    
+    <!-- Efek TV Tabung Retro -->
+    <div class="scanlines"></div>
+
+    <!-- UI Overlay -->
+    <div class="ui-layer p-4">
+        <div class="flex justify-between items-start text-white text-xs md:text-sm shadow-md">
+            <div class="text-yellow-400 drop-shadow-[0_2px_2px_rgba(0,0,0,1)]">SKOR: <span id="score">0</span></div>
+            <div class="text-blue-400 drop-shadow-[0_2px_2px_rgba(0,0,0,1)]">KECEPATAN: <span id="speed-display">100</span> KM/J</div>
+        </div>
+
+        <!-- Tombol Kontrol HP -->
+        <div class="flex justify-between pb-8 px-2" id="controls">
+            <button id="btn-left" class="control-btn w-20 h-20 md:w-24 md:h-24 rounded-full flex items-center justify-center text-white text-2xl shadow-[0_0_15px_rgba(255,255,255,0.3)]">
+                &larr;
+            </button>
+            <button id="btn-right" class="control-btn w-20 h-20 md:w-24 md:h-24 rounded-full flex items-center justify-center text-white text-2xl shadow-[0_0_15px_rgba(255,255,255,0.3)]">
+                &rarr;
+            </button>
+        </div>
+    </div>
+
+    <!-- Layar Mulai -->
+    <div id="start-screen" class="absolute inset-0 flex flex-col items-center justify-center text-center z-20">
+        <h1 class="text-3xl md:text-5xl text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-600 mb-2 drop-shadow-[0_5px_5px_rgba(0,0,0,1)]" style="-webkit-text-stroke: 1px white;">NEON RIDER</h1>
+        <p class="text-white text-[10px] md:text-xs mb-8">PS2 Vibe Edition</p>
+        <button id="start-btn" class="px-6 py-4 bg-yellow-500 hover:bg-yellow-400 text-black text-sm md:text-base border-4 border-white animate-pulse">
+            MULAI GAME
+        </button>
+        <p class="text-gray-400 text-[8px] md:text-[10px] mt-8 max-w-xs">Gunakan tombol Kiri/Kanan di layar bawah untuk menghindari mobil lain.</p>
+    </div>
+
+    <!-- Layar Game Over -->
+    <div id="game-over-screen" class="absolute inset-0 flex flex-col items-center justify-center text-center z-20 hidden">
+        <h1 class="text-3xl md:text-5xl text-red-500 mb-4 drop-shadow-[0_5px_5px_rgba(0,0,0,1)]">TABRAKAN!</h1>
+        <p class="text-white text-sm md:text-base mb-8">Skor Akhir: <span id="final-score" class="text-yellow-400">0</span></p>
+        <button id="restart-btn" class="px-6 py-4 bg-white hover:bg-gray-200 text-black text-sm md:text-base border-4 border-red-500">
+            MAIN LAGI
+        </button>
+    </div>
+
+    <script>
+        // --- Variabel Global ---
+        let scene, camera, renderer;
+        let player, road, roadLines = [];
+        let obstacles = [];
+        let animationId;
+        
+        // Status Game
+        let isPlaying = false;
+        let score = 0;
+        let speed = 0.4; // Kecepatan awal jalan
+        let moveLeft = false;
+        let moveRight = false;
+        let targetX = 0; // Posisi target pemain (untuk animasi halus)
+        const laneWidth = 2.5;
+
+        // Elemen DOM
+        const scoreEl = document.getElementById('score');
+        const speedEl = document.getElementById('speed-display');
+        const finalScoreEl = document.getElementById('final-score');
+        const startScreen = document.getElementById('start-screen');
+        const gameOverScreen = document.getElementById('game-over-screen');
+        
+        // --- Inisialisasi Three.js ---
+        function init() {
+            const container = document.getElementById('canvas-container');
+            
+            // Scene dengan kabut gelap khas game lawas untuk menyembunyikan ujung dunia
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x0a0a2a);
+            scene.fog = new THREE.Fog(0x0a0a2a, 10, 50);
+
+            // Kamera (Sudut pandang orang ketiga dari belakang atas)
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 4, 8);
+            camera.lookAt(0, 0, -5);
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: false }); // Antialias false untuk kesan pixelated/retro
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio > 1 ? 1 : 1); // Batasi pixel ratio untuk performa & tampilan retro
+            container.appendChild(renderer.domElement);
+
+            // Pencahayaan
+            const ambientLight = new THREE.AmbientLight(0x404040, 2); // Cahaya lingkungan
+            scene.add(ambientLight);
+            
+            const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+            dirLight.position.set(5, 10, 5);
+            scene.add(dirLight);
+
+            // --- Membangun Dunia ---
+            
+            // Jalanan
+            const roadGeometry = new THREE.PlaneGeometry(12, 200);
+            const roadMaterial = new THREE.MeshLambertMaterial({ color: 0x222222 });
+            road = new THREE.Mesh(roadGeometry, roadMaterial);
+            road.rotation.x = -Math.PI / 2;
+            road.position.z = -50;
+            scene.add(road);
+
+            // Garis Jalan (Garis putus-putus)
+            createRoadLines();
+
+            // Rumput / Tanah samping
+            const groundGeometry = new THREE.PlaneGeometry(200, 200);
+            const groundMaterial = new THREE.MeshLambertMaterial({ color: 0x051a05 });
+            const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+            ground.rotation.x = -Math.PI / 2;
+            ground.position.z = -50;
+            ground.position.y = -0.1;
+            scene.add(ground);
+
+            // Mobil Pemain
+            player = createCar(0xff0055); // Warna Pink Neon
+            player.position.set(0, 0.5, 2);
+            scene.add(player);
+
+            // Event Listeners untuk Resize
+            window.addEventListener('resize', onWindowResize, false);
+            
+            // Setup Kontrol
+            setupControls();
+        }
+
+        // --- Fungsi Membuat Model Mobil Low-Poly ---
+        function createCar(colorHex) {
+            const carGroup = new THREE.Group();
+
+            // Bodi utama
+            const bodyGeo = new THREE.BoxGeometry(1.2, 0.5, 2.5);
+            const bodyMat = new THREE.MeshLambertMaterial({ color: colorHex });
+            const body = new THREE.Mesh(bodyGeo, bodyMat);
+            body.position.y = 0.5;
+            carGroup.add(body);
+
+            // Atap/Kabin
+            const cabinGeo = new THREE.BoxGeometry(1.0, 0.4, 1.2);
+            const cabinMat = new THREE.MeshLambertMaterial({ color: 0x111111 }); // Kaca gelap
+            const cabin = new THREE.Mesh(cabinGeo, cabinMat);
+            cabin.position.y = 0.95;
+            cabin.position.z = -0.2;
+            carGroup.add(cabin);
+
+            // Roda (Hitam)
+            const wheelGeo = new THREE.BoxGeometry(0.3, 0.4, 0.4);
+            const wheelMat = new THREE.MeshLambertMaterial({ color: 0x000000 });
+            
+            const wheelPositions = [
+                [-0.7, 0.2, 0.8], [0.7, 0.2, 0.8],   // Depan
+                [-0.7, 0.2, -0.8], [0.7, 0.2, -0.8]  // Belakang
+            ];
+
+            wheelPositions.forEach(pos => {
+                const wheel = new THREE.Mesh(wheelGeo, wheelMat);
+                wheel.position.set(pos[0], pos[1], pos[2]);
+                carGroup.add(wheel);
+            });
+
+            // Lampu belakang (neon)
+            const tailLightGeo = new THREE.BoxGeometry(0.3, 0.1, 0.1);
+            const tailLightMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+            const tailLightL = new THREE.Mesh(tailLightGeo, tailLightMat);
+            tailLightL.position.set(-0.4, 0.5, 1.26);
+            const tailLightR = tailLightL.clone();
+            tailLightR.position.set(0.4, 0.5, 1.26);
+            carGroup.add(tailLightL);
+            carGroup.add(tailLightR);
+
+            return carGroup;
+        }
+
+        // --- Fungsi Membuat Garis Jalan ---
+        function createRoadLines() {
+            const lineGeo = new THREE.PlaneGeometry(0.2, 3);
+            const lineMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+            
+            // Garis tengah kiri dan kanan
+            for(let i=0; i<20; i++) {
+                // Garis Kiri
+                let lineL = new THREE.Mesh(lineGeo, lineMat);
+                lineL.rotation.x = -Math.PI / 2;
+                lineL.position.set(-2, 0.01, -i * 6);
+                scene.add(lineL);
+                roadLines.push(lineL);
+
+                // Garis Kanan
+                let lineR = new THREE.Mesh(lineGeo, lineMat);
+                lineR.rotation.x = -Math.PI / 2;
+                lineR.position.set(2, 0.01, -i * 6);
+                scene.add(lineR);
+                roadLines.push(lineR);
+            }
+        }
+
+        // --- Fungsi Memunculkan Rintangan (Mobil Lain) ---
+        function spawnObstacle() {
+            if (!isPlaying) return;
+
+            // Pilih jalur acak: -1 (kiri), 0 (tengah), 1 (kanan)
+            const lanes = [-2.5, 0, 2.5];
+            const randomLane = lanes[Math.floor(Math.random() * lanes.length)];
+            
+            // Warna acak
+            const colors = [0x00ffff, 0xffff00, 0x00ff00, 0xff8800, 0xaaaaaa];
+            const randomColor = colors[Math.floor(Math.random() * colors.length)];
+
+            const obs = createCar(randomColor);
+            obs.position.set(randomLane, 0.5, -60); // Muncul jauh di depan
+            
+            // Variasi kecepatan rintangan
+            obs.userData.speed = speed * (0.4 + Math.random() * 0.4); 
+
+            scene.add(obs);
+            obstacles.push(obs);
+
+            // Panggil fungsi ini lagi secara acak
+            const nextSpawnTime = 1000 + Math.random() * 2000 - (speed * 1000); 
+            setTimeout(spawnObstacle, Math.max(500, nextSpawnTime));
+        }
+
+        // --- Kontrol Pemain ---
+        function setupControls() {
+            const btnLeft = document.getElementById('btn-left');
+            const btnRight = document.getElementById('btn-right');
+
+            // Fungsi untuk menggeser target X
+            const goLeft = () => { if(isPlaying) targetX = Math.max(-laneWidth, targetX - laneWidth); };
+            const goRight = () => { if(isPlaying) targetX = Math.min(laneWidth, targetX + laneWidth); };
+
+            // Touch events untuk HP
+            btnLeft.addEventListener('touchstart', (e) => { e.preventDefault(); moveLeft = true; goLeft(); });
+            btnLeft.addEventListener('touchend', (e) => { e.preventDefault(); moveLeft = false; });
+            
+            btnRight.addEventListener('touchstart', (e) => { e.preventDefault(); moveRight = true; goRight(); });
+            btnRight.addEventListener('touchend', (e) => { e.preventDefault(); moveRight = false; });
+
+            // Mouse events untuk tes di Desktop
+            btnLeft.addEventListener('mousedown', goLeft);
+            btnRight.addEventListener('mousedown', goRight);
+
+            // Keyboard events untuk Desktop
+            window.addEventListener('keydown', (e) => {
+                if(e.key === 'ArrowLeft' || e.key === 'a') goLeft();
+                if(e.key === 'ArrowRight' || e.key === 'd') goRight();
+            });
+            
+            // Tombol UI
+            document.getElementById('start-btn').addEventListener('click', startGame);
+            document.getElementById('restart-btn').addEventListener('click', startGame);
+        }
+
+        // --- Logika Game Utama ---
+        function startGame() {
+            startScreen.classList.add('hidden');
+            gameOverScreen.classList.add('hidden');
+            
+            // Reset state
+            score = 0;
+            speed = 0.5;
+            targetX = 0;
+            player.position.x = 0;
+            scoreEl.innerText = score;
+            
+            // Hapus rintangan lama
+            obstacles.forEach(obs => scene.remove(obs));
+            obstacles = [];
+
+            isPlaying = true;
+            
+            // Mulai memunculkan musuh
+            setTimeout(spawnObstacle, 1000);
+            
+            // Mulai loop animasi
+            if(animationId) cancelAnimationFrame(animationId);
+            animate();
+        }
+
+        function gameOver() {
+            isPlaying = false;
+            finalScoreEl.innerText = Math.floor(score);
+            gameOverScreen.classList.remove('hidden');
+            cancelAnimationFrame(animationId);
+        }
+
+        function checkCollision(obs) {
+            // Hitbox sederhana berbasis jarak
+            const dx = player.position.x - obs.position.x;
+            const dz = player.position.z - obs.position.z;
+            const distance = Math.sqrt(dx*dx + dz*dz);
+            
+            // Jika jarak pusat mobil kurang dari 2 unit, dianggap tabrakan
+            if (distance < 1.8 && dz < 2.5 && dz > -2.5) {
+                gameOver();
+            }
+        }
+
+        // --- Loop Animasi ---
+        function animate() {
+            if (!isPlaying) return;
+            animationId = requestAnimationFrame(animate);
+
+            // Animasi pergerakan pemain (Smooth Lerp)
+            player.position.x += (targetX - player.position.x) * 0.15;
+            
+            // Efek membelok (miring sedikit)
+            player.rotation.z = (player.position.x - targetX) * -0.1;
+            player.rotation.y = (player.position.x - targetX) * 0.1;
+
+            // Animasi Garis Jalan
+            roadLines.forEach(line => {
+                line.position.z += speed;
+                if(line.position.z > 5) {
+                    line.position.z = -115;
+                }
+            });
+
+            // Update Rintangan & Deteksi Tabrakan
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                let obs = obstacles[i];
+                
+                // Musuh bergerak mendekat (kecepatan relatif terhadap pemain)
+                obs.position.z += speed - (obs.userData.speed || 0.2);
+
+                // Cek tabrakan
+                checkCollision(obs);
+
+                // Hapus jika sudah lewat kamera
+                if (obs.position.z > 10) {
+                    scene.remove(obs);
+                    obstacles.splice(i, 1);
+                    // Tambah skor jika berhasil lewat
+                    score += 10;
+                    scoreEl.innerText = Math.floor(score);
+                    
+                    // Tingkatkan tingkat kesulitan (kecepatan)
+                    if (speed < 1.5) speed += 0.01;
+                    speedEl.innerText = Math.floor(100 + (speed * 100));
+                }
+            }
+
+            // Tambah skor pasif berdasarkan jarak
+            score += 0.1 * speed;
+            scoreEl.innerText = Math.floor(score);
+
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // Jalankan inisialisasi saat window dimuat
+        window.onload = init;
+
+    </script>
+</body>
+</html>
